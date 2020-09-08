@@ -1,0 +1,446 @@
+<!DOCTYPE html>
+<html>
+    <head>
+        <meta charset="utf-8">
+        <title>How to Build an Emulator Part 1</title>
+    </head>
+    <body>
+    <div>
+      <h2>How to Build an Emulator Part 1</h2>
+      <h1>How to Build a Multithreaded Gameserver (In Rust!) Part 1</h1>
+<h2>Intro</h2>
+<p>Ever since I played through <a href="https://en.wikipedia.org/wiki/Final_Fantasy_VII">Final Fantasy VII</a> (a Playstation game from 1997) and finally beat Sephiroth on my Windows computer I've been interested in emulators. The idea that a computer does not have to be an impenetrable hunk of plastic and silicon, but an understandable system of instructions and responses, is for me strangely uplifting. So during the pandemic I finally mustered the willpower to sit down and learn more by implementing my own simple <a href="https://en.wikipedia.org/wiki/CHIP-8">CHIP-8</a> emulator in Rust. Since there <a href="http://www.multigesture.net/articles/how-to-write-an-emulator-chip-8-interpreter/">are</a> <a href="https://www.freecodecamp.org/news/creating-your-very-own-chip-8-emulator/">a</a> <a href="https://blog.scottlogic.com/2017/12/13/chip8-emulator-webassembly-rust.html">lot</a> of CHIP-8 tutorials out there, I extended mine by building a multithreaded gameserver on top of it, so during the pandemic you can share a URL with your friend and play PONG!</p>
+<p>If you want to jump right into the code, go to <a href="https://github.com/melvillian/chipotle8">this repo for the standalone emulator</a>, and <a href="https://github.com/melvillian/chipotle8-server">this repo for the multithreaded gameserver (still a WIP!)</a>.</p>
+<p>My foremost goal is to demystify the concepts and implementation of a multiplayer gameserver emulator. By the end of this series you'll know enough to write your own CHIP-8 emulator in your favorite language, and you'll see one way of dealing with the problems that arise in multithreaded networked environments, like shared memory, network latency, and server load.</p>
+<h2>Brief Outline</h2>
+<ul>
+<li>What Is An Emulator?</li>
+<li>What Is Rust and Systems Programming?</li>
+<li>What is CHIP-8</li>
+<li><code>chipotle8</code> Project Structure</li>
+<li>The Game Loop</li>
+<li>Some Example Opcodes and Their Implementation</li>
+<li>Conclusion to Part 1</li>
+</ul>
+<h2>What Is An Emulator? (Or, Taking the Red Pill)</h2>
+<p>verb (used with object), em·u·lat·ed, em·u·lat·ing.</p>
+<ol>
+<li>to try to equal or excel; imitate with effort to equal or surpass:</li>
+<li>Computers:
+<ol>
+<li>to imitate (a particular computer system) by using a software system,</li>
+</ol>
+</li>
+</ol>
+<p>&quot;<em>You take the blue pill, the story ends, you wake up in your bed and believe whatever you want to believe. You take the red pill... you stay in Wonderland, and I show you how deep the rabbit hole goes</em>.&quot;</p>
+<p>- Morpheus</p>
+<p>In the absolute classic The Matrix, the protagonist Neo must grapple with the fact that his entire life has been a synthetic farce, a reality emulating the world prior to the rise of the human-harvesting AI. Until Morpheus clues him in to the real world Neo had only a whisper of a feeling that there was something off about his world. To him and his sensory inputs, The Matrix was near-indistinguishable from the real.</p>
+<p>An emulator is a piece of software which when given an input (usually a game file or executable program) will execute the same instructions and respond to I/O devices exactly as the device (usually a piece of hardware such as a Gameboy or Playstation) it is emulating. Some well known emulators are <a href="http://www.emulator-zone.com/doc.php/gba/vboyadvance.html">Visual Boy Advance for Gameboy Advance</a> and <a href="http://www.emulator-zone.com/doc.php/psx/epsxe.html">ePSXe for Playstation</a>.</p>
+<p>Image:
+https://www.google.com/imgres?imgurl=https://i.ytimg.com/vi/b4eyHykOD70/maxresdefault.jpg&amp;imgrefurl=https://www.youtube.com/watch?v%3Db4eyHykOD70&amp;tbnid=wD9UAkVWLjb-XM&amp;vet=1&amp;docid=Zf2k5_y5CU817M&amp;w=1280&amp;h=720&amp;hl=en&amp;source=sh/x/im</p>
+<p>In this blog series we'll be implementing a <a href="https://en.wikipedia.org/wiki/CHIP-8">CHIP-8 Emulator</a> which ran 70's classics like <a href="https://en.wikipedia.org/wiki/Pong#Gameplay">Pong</a> and <a href="https://en.wikipedia.org/wiki/Space_Invaders">Space Invaders</a> using Rust.</p>
+<h2>What Is Rust and Why Use It For A Multiplayer Gameserver?</h2>
+<p><a href="https://www.rust-lang.org/">Rust</a> is a relatively new computer programming language that feels like a mix between Haskell and C. On its front page we see it focuses on &quot;performance, reliability, and productivity. While the <a href="https://benchmarksgame-team.pages.debian.net/benchmarksgame/fastest/rust.html">performance is undeniable</a> and I have some anecdata and personal experience that once you get a Rust program to compile it will reliably run without you babysitting it, the productivity claim is... nuanced. Maybe it's productive in the same way that <a href="https://vim-adventures.com/">vim</a> is productive once you pour days into learning the new concepts and <a href="http://xion.io/post/code/rust-borrowchk-tricks.html">come to terms with the borrow checker</a>. And I can definitely see how it's productive once you have a 100,000+ line codebase with 20+ people working on it needing to get shit done without <a href="https://en.wikipedia.org/wiki/Action_at_a_distance_%28computer_programming%29">spooky action at a distance</a>. However when you are first learning Rust and trying to do basic things like <code>String</code> manipulation or creating a new thread, it's probably going to take an order of magnitude longer <em>at first</em> for you to do it because the Rust compiler is very clever and will try to stop you from shooting yourself in the foot. Thus causing you to bend backwards in order to do something <a href="https://stackoverflow.com/questions/30154541/how-do-i-concatenate-strings">as simple as <code>String</code> concatenation</a>.</p>
+<p>So if Rust is a pain to use as a beginner, why am I using it to write my first software foray into multiplayer gaming? A good reason is that I need my game server to be fast so that it can be cheap. I need to pay for every <a href="https://en.wikipedia.org/wiki/Amazon_Elastic_Compute_Cloud">AWS EC2 instance</a> running my game servers, and I predict each game server will max out its virtualized hardware resources as it handles many simultaneous pairs of players. If I went with a programming language that is on average 10 times as slow as something like Rust, I'll need to pay roughly 10 times as much to support the same number of players. Another good reason is flexibility via <a href="https://www.rust-lang.org/what/wasm">Rust's support for WebAssembly</a>. If I can write the emulator in a language that can compile down to <code>wasm</code>, then I could eschew the client/server model entirely and instead go with a peer-to-peer approach <a href="https://en.wikipedia.org/wiki/WebRTC">using WebRTC</a> where when 2 players create a game together, one of them is randomly chosen to run the emulator in the browser and the game progresses without any communication to a server. But really if I'm going to be honest, the primary reason to write this in Rust is personally I find this language very modern and powerful, and I want to write more in it.</p>
+<h2>What Is CHIP-8?</h2>
+<p>Enough on motivation, let's dive into what an emulator really looks like, in particular an emulator for the CHIP-8 system. We're basically designing a computer, so we need to do know what components make up such a computer. Below I give an exhaustive list and a short explanation of all CHIP-8 components (Note, <a href="https://en.wikipedia.org/wiki/CHIP-8">The wiki article on CHIP-8</a> is a wealth of information on the CHIP-8 if you want to deep dive).</p>
+<h3>CHIP-8 Components</h3>
+<ul>
+<li>Display</li>
+<li>Keyboard</li>
+<li>Memory</li>
+<li>Registers</li>
+<li>Op Codes</li>
+<li>Timers</li>
+</ul>
+<h4>Display</h4>
+<p><img src="./images/pong_example.png" alt="An example of the CHIP-8 Display. Note that the right pong panel is missing because the original developers of this CHIP-8 Pong game decided to undraw and redraw the panels every so often ¯_(ツ)_/¯" /></p>
+<p>The CHIP-8 display is represented as a nested array with 32 rows and 64 columns of unsigned 32-bit integers (<code>u32</code>'s). Let's call them pixels. Each pixel only takes 2 values, <code>0x00FF_FFFF</code> for white and <code>0x0000_0000</code> for black. We'll be using functions like <code>get_pixels(&amp;mut self) -&gt; &amp;[u32]</code> and <code>xor_set(&amp;mut self, x: u8, y: u8, enabled: bool) -&gt; bool</code> to read and write our display.</p>
+<h4>Keyboard</h4>
+<p><img src="./images/keyboard_qwerty.png" alt="Picture of our hexadecimal keyboard mapping" /></p>
+<p>The CHIP-8 uses a hexadecimal keyboard, a keyboard with 16 possible values 0-F. We'll be mapping 16 keys in the left side of your standard <a href="https://en.wikipedia.org/wiki/QWERTY">QWERTY keyboard</a> to these CHIP-8 internal keys,.</p>
+<h4>Memory</h4>
+<p>Remember when I said the CHIP-8 is from the 70's? Turns out they made due with 1_000_000 times less RAM than we do today, and our CHIP-8 emulator is only going to have 4096 bytes of RAM (so little!). And to make matters even more cramped, since the hardware running the original CHIP-8 systems stored the CHIP-8 interpreter binary itself in bytes 0-511 of memory, there's really 4096 - 512 == 3584 bytes available for the game to store itself and manipulate whilst in play*. We'll use a static array of bytes, <code>[u8; 4096]</code>, to hold the emulator's RAM.</p>
+<h4>Registers</h4>
+<p>Here we begin to introduce the components of a computer, and thus an emulator, that are usually too low level to come up in day-today application software development (think web, mobile or desktop programming). At a high level a <a href="https://en.wikipedia.org/wiki/Processor_register">register</a> are is a like memory in that it's a location on the computer where a processes 0's and 1's get stored, but unlike memory in that the registers store very extremely little data and are many orders of magnitude faster to read and write compared to main memory. Our CHIP-8 emulator has 17 registers in total. 16 of them are labeled <code>V0</code>, <code>V1</code>, <code>V2</code>, ... <code>VE</code>, <code>VF</code> and are a <a href="https://en.wikipedia.org/wiki/Processor_register#Types">type of register</a> we call data registers because they are meant to store arbitrary bytes of data (for instance <code>V3 = 0x01</code>). The last register, labeled <code>I</code>, is an address register because it is meant to store a single one of the CHIP-8 system's 16-bit addresses. The majority of the work our emulator does will be very simple instructions like moving data in between registers and memory, and performing arithmetic on data in the registers (for instance, there is an instruction that takes two registers <code>VX</code> and <code>VY</code>, where <code>X</code> and <code>Y</code> are one of our 16 data registers, and loads the byte value in <code>VY</code> into <code>VX</code>). Registers are the building blocks of our emulator so we'll be referencing them all throughout this blog post. One last thing to keep in mind about registers is that computer architecture designers will often designate one or more registers to have special responsibilities beyond only storing data or addresses. In our case this special register is <code>VF</code>. No well-designed games for the CHIP-8 use the <code>VF</code> register, because the CHIP-8 system uses it as a <a href="https://en.wikipedia.org/wiki/Status_register#Common_flags">flag register</a> so it can keep track of when arithmetic instructions result in overflow or underflow, as well as pixel value changes when the display gets redrawn. These special registers' abilities serve as a convenience for game programmers so they can keep track of often-used program state (like if their most recent display redraw caused any pixel collisions, and they should eliminate one of their sprites because it was hit by a bullet).</p>
+<h4>Instructions (Op Codes)</h4>
+<p>For anyone who's worked with <a href="https://en.wikipedia.org/wiki/Assembly_language">assembly</a> before, op codes may bring warm (or maybe horrific?) memories. Op codes (we'll also call them instructions) makeup the brain of our emulator; they are how our emulator gets shit done. Need to draw some pixels to the screen? Give our emulator the op code like <code>DispDraw</code>/<code>0xDXYN</code>, when executed by the emulator, will take <code>N</code> bytes worth of bits starting at the address in the <code>I</code> register and copy them to the display starting at <code>X</code> and <code>Y</code> coordinates. Remember that example up in #### Registers with <code>VX</code> and <code>VY</code>? That would be the <code>AssignVyToVx</code>/<code>0x8XY0</code> op code, which copies the contents of register <code>VY</code> into register <code>VX</code>. In these and all future examples the <code>X</code> and <code>Y</code> are variables which can take any hexadecimal value <code>0x00</code> through <code>0x0F</code>.</p>
+<p>A note for those wondering where names like <code>DispDraw</code> and <code>AssignVyToVx</code> came from. In each of the two examples above I gave 2 different names for the same op code. <code>AssignVyToVx</code> is the name of the enum variant I chose to use to make it human readable, but just like how assembly is simpling a mapping of human-readable words like <a href="http://www.keil.com/support/man/docs/armasm/armasm_dom1361289878994.htm"><code>mov ebx, 32</code></a> to machine-readable hexadecimal like <code>8B 5D 32</code>, <code>AssignVyToVx</code> represents the machine-readable instruction <code>8XY0</code> (where <code>X</code> and <code>Y</code> are hexadecimal numbers). I chose these names because they made sense to me and they're similar to the names given in the <a href="https://en.wikipedia.org/wiki/CHIP-8#Opcode_table">wikipedia article for CHIP-8</a>, but if you read about other CHIP-8 emulator implementations you will see different names. Call it my personal touch :).</p>
+<p>The bulk of our work on <code>chipotle8</code> will be implementing the handlers for CHIP-8's 35 op codes. Some will only be a few lines of code, like <code>AssignVyToVx</code>, and others will be 50+ lines of code (usually those dealing with IO like taking input from the keyboard or putting output to the display).</p>
+<h4>Timers</h4>
+<p>Our emulator will need a way to know about the players' passage of time, otherwise Pong paddles will zip across the board at 60 frames a second, and our emulator's cute beeping sound will only ring for a fraction of a second. Timers serve to synchronize the players' human-speed experience of the game with the emulator's comparatively blazing fast execution of the game. CHIP-8 has 2 timers we'll need to implement; a delay timer and a sound timer. Both timers are actually just <code>u8</code> values which we will make decrement every 16.666 milliseconds (a.k.a 60 Hz). So if a game program wants to remind itself to do something in 1 second, it will set the <code>delay_timer</code> to <code>60 * 1 = 60</code> and then perform an instruction only when the delay timer's value is 0. Similarly, if the game program wants to exalt player 1's victory with a glorious beep for 4 seconds, it will set the <code>sound_timer</code> to <code>60 * 4 = 240</code>, knowing that we've implemented our emulator such that whenever <code>sound_timer</code> is not equal to 0, we'll play a beep sound.</p>
+<h2><code>chipotle8</code> Project Structure</h2>
+<p>Before we dive into implementation, let's get an overview of what this project is going to look like</p>
+<pre style="background-color:#2b303b;">
+<span style="background-color:#2b303b;color:#8fa1b3;">➜</span><span style="background-color:#2b303b;color:#c0c5ce;">  chipotle8 git:(master) </span><span style="background-color:#2b303b;color:#8fa1b3;">✗</span><span style="background-color:#2b303b;color:#c0c5ce;"> tree</span><span style="background-color:#2b303b;color:#bf616a;"> -I</span><span style="background-color:#2b303b;color:#c0c5ce;"> target </span><span style="background-color:#2b303b;color:#65737e;"># we don&#39;t bother showing the cargo artifacts in ./target
+</span><span style="background-color:#2b303b;color:#c0c5ce;">.
+</span><span style="background-color:#2b303b;color:#8fa1b3;">├──</span><span style="background-color:#2b303b;color:#c0c5ce;"> Cargo.lock
+</span><span style="background-color:#2b303b;color:#8fa1b3;">├──</span><span style="background-color:#2b303b;color:#c0c5ce;"> Cargo.toml
+</span><span style="background-color:#2b303b;color:#8fa1b3;">├──</span><span style="background-color:#2b303b;color:#c0c5ce;"> examples
+</span><span style="background-color:#2b303b;color:#8fa1b3;">│</span><span style="background-color:#2b303b;color:#c0c5ce;">   └── pong.rs
+</span><span style="background-color:#2b303b;color:#8fa1b3;">├──</span><span style="background-color:#2b303b;color:#c0c5ce;"> games
+</span><span style="background-color:#2b303b;color:#8fa1b3;">│</span><span style="background-color:#2b303b;color:#c0c5ce;">   ├── 15PUZZLE
+</span><span style="background-color:#2b303b;color:#8fa1b3;">│</span><span style="background-color:#2b303b;color:#c0c5ce;">   ├── BLINKY
+</span><span style="background-color:#2b303b;color:#8fa1b3;">│</span><span style="background-color:#2b303b;color:#c0c5ce;">   ├── BLITZ
+</span><span style="background-color:#2b303b;color:#8fa1b3;">│</span><span style="background-color:#2b303b;color:#c0c5ce;">   ├── BRIX
+</span><span style="background-color:#2b303b;color:#8fa1b3;">│</span><span style="background-color:#2b303b;color:#c0c5ce;">   ├── CONNECT4
+</span><span style="background-color:#2b303b;color:#8fa1b3;">│</span><span style="background-color:#2b303b;color:#c0c5ce;">   ├── GUESS
+</span><span style="background-color:#2b303b;color:#8fa1b3;">│</span><span style="background-color:#2b303b;color:#c0c5ce;">   ├── HIDDEN
+</span><span style="background-color:#2b303b;color:#8fa1b3;">│</span><span style="background-color:#2b303b;color:#c0c5ce;">   ├── INVADERS
+</span><span style="background-color:#2b303b;color:#8fa1b3;">│</span><span style="background-color:#2b303b;color:#c0c5ce;">   ├── KALEID
+</span><span style="background-color:#2b303b;color:#8fa1b3;">│</span><span style="background-color:#2b303b;color:#c0c5ce;">   ├── MAZE
+</span><span style="background-color:#2b303b;color:#8fa1b3;">│</span><span style="background-color:#2b303b;color:#c0c5ce;">   ├── MERLIN
+</span><span style="background-color:#2b303b;color:#8fa1b3;">│</span><span style="background-color:#2b303b;color:#c0c5ce;">   ├── MISSILE
+</span><span style="background-color:#2b303b;color:#8fa1b3;">│</span><span style="background-color:#2b303b;color:#c0c5ce;">   ├── PONG
+</span><span style="background-color:#2b303b;color:#8fa1b3;">│</span><span style="background-color:#2b303b;color:#c0c5ce;">   ├── PONG2
+</span><span style="background-color:#2b303b;color:#8fa1b3;">│</span><span style="background-color:#2b303b;color:#c0c5ce;">   ├── PUZZLE
+</span><span style="background-color:#2b303b;color:#8fa1b3;">│</span><span style="background-color:#2b303b;color:#c0c5ce;">   ├── SYZYGY
+</span><span style="background-color:#2b303b;color:#8fa1b3;">│</span><span style="background-color:#2b303b;color:#c0c5ce;">   ├── TANK
+</span><span style="background-color:#2b303b;color:#8fa1b3;">│</span><span style="background-color:#2b303b;color:#c0c5ce;">   ├── TETRIS
+</span><span style="background-color:#2b303b;color:#8fa1b3;">│</span><span style="background-color:#2b303b;color:#c0c5ce;">   ├── TICTAC
+</span><span style="background-color:#2b303b;color:#8fa1b3;">│</span><span style="background-color:#2b303b;color:#c0c5ce;">   ├── UFO
+</span><span style="background-color:#2b303b;color:#8fa1b3;">│</span><span style="background-color:#2b303b;color:#c0c5ce;">   ├── VBRIX
+</span><span style="background-color:#2b303b;color:#8fa1b3;">│</span><span style="background-color:#2b303b;color:#c0c5ce;">   ├── VERS
+</span><span style="background-color:#2b303b;color:#8fa1b3;">│</span><span style="background-color:#2b303b;color:#c0c5ce;">   └── WIPEOFF
+</span><span style="background-color:#2b303b;color:#8fa1b3;">├──</span><span style="background-color:#2b303b;color:#c0c5ce;"> README.md
+</span><span style="background-color:#2b303b;color:#8fa1b3;">└──</span><span style="background-color:#2b303b;color:#c0c5ce;"> src
+    </span><span style="background-color:#2b303b;color:#8fa1b3;">├──</span><span style="background-color:#2b303b;color:#c0c5ce;"> graphics.rs
+    </span><span style="background-color:#2b303b;color:#8fa1b3;">├──</span><span style="background-color:#2b303b;color:#c0c5ce;"> keyboard.rs
+    </span><span style="background-color:#2b303b;color:#8fa1b3;">├──</span><span style="background-color:#2b303b;color:#c0c5ce;"> lib.rs
+    </span><span style="background-color:#2b303b;color:#8fa1b3;">├──</span><span style="background-color:#2b303b;color:#c0c5ce;"> lib_test.rs
+    </span><span style="background-color:#2b303b;color:#8fa1b3;">└──</span><span style="background-color:#2b303b;color:#c0c5ce;"> op.rs
+
+</span><span style="background-color:#2b303b;color:#8fa1b3;">3</span><span style="background-color:#2b303b;color:#c0c5ce;"> directories, 32 files
+</span></pre>
+<p><code>examples/</code> is a standard directory in Rust projects that contain files containing a <code>fn main()</code> function for running examples. If there exists a file <code>examples/pong.rs</code> in the root directory, you can run <code>cargo run --example pong</code> and it will execute the <code>main</code> function in <code>examples/pong.rs</code>.</p>
+<p><code>games/</code> is a directory of public games written for the CHIP-8 emulator that we will load byte-by-byte into our emulator in order to play.</p>
+<p>Within <code>src/</code>, <code>graphics.rs</code> holds the logic for representing and drawing the 64x32 CHIP-8 display, <code>keyboard.rs</code> holds the logic for handling keyboard input and keyboard-related op codes, <code>op.rs</code> is a small file holding our <code>Op</code> <a href="https://doc.rust-lang.org/rust-by-example/custom_types/enum.html"><code>enum</code></a>, and finally <code>lib.rs</code> holds our op code handlers and the <code>Emulator</code> <a href="https://doc.rust-lang.org/rust-by-example/custom_types/structs.html"><code>struct</code></a> itself.</p>
+<h2>The Game Loop</h2>
+<p>At the end of the day, most every game has some sort of endless loop code which runs the game. Let's take a look at what our's will look like so we can get a high level idea of how our game is going to run**.</p>
+<pre style="background-color:#2b303b;">
+<span style="background-color:#2b303b;color:#b48ead;">while</span><span style="background-color:#2b303b;color:#c0c5ce;"> window.</span><span style="background-color:#2b303b;color:#96b5b4;">is_open</span><span style="background-color:#2b303b;color:#c0c5ce;">() {
+    </span><span style="background-color:#2b303b;color:#65737e;">// execute the current instruction
+    </span><span style="background-color:#2b303b;color:#b48ead;">if let </span><span style="background-color:#2b303b;color:#c0c5ce;">Some(op) = emulator.</span><span style="background-color:#2b303b;color:#96b5b4;">cycle</span><span style="background-color:#2b303b;color:#c0c5ce;">() {
+       </span><span style="background-color:#2b303b;color:#65737e;">// redraw the display if it changed
+        </span><span style="background-color:#2b303b;color:#b48ead;">if</span><span style="background-color:#2b303b;color:#c0c5ce;"> op.</span><span style="background-color:#2b303b;color:#96b5b4;">is_display_op</span><span style="background-color:#2b303b;color:#c0c5ce;">() {
+            </span><span style="background-color:#2b303b;color:#b48ead;">let</span><span style="background-color:#2b303b;color:#c0c5ce;"> display = emulator.</span><span style="background-color:#2b303b;color:#96b5b4;">get_pixels</span><span style="background-color:#2b303b;color:#c0c5ce;">();
+            window.</span><span style="background-color:#2b303b;color:#96b5b4;">update_with_buffer</span><span style="background-color:#2b303b;color:#c0c5ce;">(display, </span><span style="background-color:#2b303b;color:#d08770;">WIDTH</span><span style="background-color:#2b303b;color:#c0c5ce;">, </span><span style="background-color:#2b303b;color:#d08770;">HEIGHT</span><span style="background-color:#2b303b;color:#c0c5ce;">).</span><span style="background-color:#2b303b;color:#96b5b4;">unwrap</span><span style="background-color:#2b303b;color:#c0c5ce;">();
+        }
+    }
+
+    </span><span style="background-color:#2b303b;color:#65737e;">// check for key press changes and update the Emulator with which keys are up or down
+</span><span style="background-color:#2b303b;color:#c0c5ce;">    emulator.</span><span style="background-color:#2b303b;color:#96b5b4;">handle_key_input</span><span style="background-color:#2b303b;color:#c0c5ce;">(&amp;keyboard);
+}
+</span></pre>
+<p>We execute the current instruction, which will most likely update some registers, but may also write data to memory, update the internal display buffer, or even halt the emulator while it waits for a certain key to be pressed. Then we redraw the display pixels. Since redrawing is by far the most costly action for the emulator to do, we optimize by only redrawing when the just-executed instruction changed the internal display buffer. Finally, we update the emulator's state of pressed and released keys. Looking at it from 10,000 feet you could say all we're doing, over and over again, is</p>
+<ol>
+<li>advance the program's state</li>
+<li>handle output</li>
+<li>handle input</li>
+</ol>
+<p>This is worth mentioning because every GUI application is like this, running in a constant loop. It performs whichever action the program is meant to do (save a text document, process spreedsheets, check for twitter updates, etc.) and then handle IO.</p>
+<h2>Some Example Opcodes and Their Implementation</h2>
+<p>You now have all the knowledge you need to implement a CHIP-8 emulator. Let's look at a couple interesting op codes, IO, and tests to see what the future holds.</p>
+<h3>The Emulator <code>struct</code></h3>
+<p>First off, since everything centers around the <code>Emulator</code>, we'll look at that first.</p>
+<pre style="background-color:#2b303b;">
+<span style="background-color:#2b303b;color:#65737e;">/// Stores the registers, memory, timers, and any other data necessary to run the emulator.
+///
+/// # Examples
+///
+/// ```no_run
+/// # use std::io::Error;
+/// # use chipotle8::Emulator;
+/// # fn main() -&gt; Result&lt;(), Error&gt; {
+/// let mut emulator = Emulator::with_game_file(&quot;games/PONG&quot;)?;
+///
+/// // execute the first two instructions of the `PONG` game
+/// emulator.cycle();
+/// emulator.cycle();
+/// #    Ok(())
+/// # }
+</span><span style="background-color:#2b303b;color:#b48ead;">pub struct </span><span style="background-color:#2b303b;color:#c0c5ce;">Emulator {
+    </span><span style="background-color:#2b303b;color:#bf616a;">memory</span><span style="background-color:#2b303b;color:#c0c5ce;">: [</span><span style="background-color:#2b303b;color:#b48ead;">u8</span><span style="background-color:#2b303b;color:#c0c5ce;">; 4096], </span><span style="background-color:#2b303b;color:#65737e;">// 4k of RAM
+
+    </span><span style="background-color:#2b303b;color:#bf616a;">sp</span><span style="background-color:#2b303b;color:#c0c5ce;">: </span><span style="background-color:#2b303b;color:#b48ead;">usize</span><span style="background-color:#2b303b;color:#c0c5ce;">, </span><span style="background-color:#2b303b;color:#65737e;">// stack pointer for the 16-level
+    // The stack pointer always points one beyond the top of the stack, i.e. onto
+    // unallocated memory
+    </span><span style="background-color:#2b303b;color:#bf616a;">stack</span><span style="background-color:#2b303b;color:#c0c5ce;">: [</span><span style="background-color:#2b303b;color:#b48ead;">usize</span><span style="background-color:#2b303b;color:#c0c5ce;">; 16],  </span><span style="background-color:#2b303b;color:#65737e;">// 16-level stack holding instructions
+    </span><span style="background-color:#2b303b;color:#bf616a;">I</span><span style="background-color:#2b303b;color:#c0c5ce;">: Address,          </span><span style="background-color:#2b303b;color:#65737e;">// address instruction register
+    </span><span style="background-color:#2b303b;color:#bf616a;">prev_op</span><span style="background-color:#2b303b;color:#c0c5ce;">: Option&lt;Op&gt;, </span><span style="background-color:#2b303b;color:#65737e;">// the instruction executed last cycle, used to know when to draw
+    </span><span style="background-color:#2b303b;color:#bf616a;">pc</span><span style="background-color:#2b303b;color:#c0c5ce;">: </span><span style="background-color:#2b303b;color:#b48ead;">usize</span><span style="background-color:#2b303b;color:#c0c5ce;">, </span><span style="background-color:#2b303b;color:#65737e;">// program counter, only 16 bits are needed but we use usize so we can index with it
+
+    // 16 8-bit registers. VF is used as a flag by several of the opcodes (see @Op)
+    </span><span style="background-color:#2b303b;color:#bf616a;">v</span><span style="background-color:#2b303b;color:#c0c5ce;">: [</span><span style="background-color:#2b303b;color:#b48ead;">u8</span><span style="background-color:#2b303b;color:#c0c5ce;">; 16],
+
+    </span><span style="background-color:#2b303b;color:#bf616a;">graphics</span><span style="background-color:#2b303b;color:#c0c5ce;">: Graphics, </span><span style="background-color:#2b303b;color:#65737e;">// 64x32 pixel monochrome screen
+
+    </span><span style="background-color:#2b303b;color:#bf616a;">keyboard</span><span style="background-color:#2b303b;color:#c0c5ce;">: Keyboard, </span><span style="background-color:#2b303b;color:#65737e;">// Stores the state of all keyboard input
+
+    </span><span style="background-color:#2b303b;color:#bf616a;">delay_timer</span><span style="background-color:#2b303b;color:#c0c5ce;">: </span><span style="background-color:#2b303b;color:#b48ead;">u8</span><span style="background-color:#2b303b;color:#c0c5ce;">,                    </span><span style="background-color:#2b303b;color:#65737e;">// 60 Hz timer that can be set and read
+    </span><span style="background-color:#2b303b;color:#bf616a;">delay_timer_settime</span><span style="background-color:#2b303b;color:#c0c5ce;">: time::Instant, </span><span style="background-color:#2b303b;color:#65737e;">// the instant we last set the delay_timer
+    </span><span style="background-color:#2b303b;color:#bf616a;">sound_timer</span><span style="background-color:#2b303b;color:#c0c5ce;">: </span><span style="background-color:#2b303b;color:#b48ead;">u8</span><span style="background-color:#2b303b;color:#c0c5ce;">,                    </span><span style="background-color:#2b303b;color:#65737e;">// 60 Hz timer that beeps whenever it is nonzero
+    </span><span style="background-color:#2b303b;color:#bf616a;">sound_timer_settime</span><span style="background-color:#2b303b;color:#c0c5ce;">: time::Instant, </span><span style="background-color:#2b303b;color:#65737e;">// the instant we last set the sound_timer
+    </span><span style="background-color:#2b303b;color:#bf616a;">logger</span><span style="background-color:#2b303b;color:#c0c5ce;">: Arc&lt;Logger&gt;,
+}
+</span></pre>
+<p>There are a couple new ideas here, specifically the <code>pc</code>, <code>stack</code>, and <code>sp</code> fields. Again, those familiar with systems programming will immediately see the need for these fields, but since I hope most readers are coming from a high level language it is definitely worth going into. If the following explanation still leaves you stratching your head, the Rust devs <a href="https://doc.rust-lang.org/1.22.0/book/first-edition/the-stack-and-the-heap.html">have a great explanation in the first edition of The Book</a>.</p>
+<p>The <code>pc</code> stands for &quot;program counter&quot;, and its simple job is to store the memory address of the next instruction to be executed. When a game is first loaded into address 512 (remember where up above we said the first 512 bytes are reserved for the interpreter itself?) the program counter is also set to be 512 so that we will execute the first instruction in the game file.</p>
+<p><code>stack</code> is, as you would expect <a href="https://en.wikipedia.org/wiki/Stack_(abstract_data_type)">a Stack data structure</a> whose purpose is to help store the return addresses of CHIP-8's &quot;function calls&quot;. CHIP-8 doesn't have functions per se, but it does have the <code>GotoSubRtn</code> op code which when executed pushes the current value of the <code>pc</code> onto the <code>stack</code> and then moves the <code>pc</code> to whichever memory address was passed to <code>GotoSubRtn</code>. Later when the <code>Return</code> instruction is executed the <code>Emulator</code> will pop that instruction off the <code>stack</code> and into the <code>pc</code>. This is very similar to your day-to-day programming languages which use the stack to store return values when a function gets called. And just like in regular programming languges in CHIP-8 you can execute multiple <code>GotoSubRtn</code> (just like you have a function called within a function in a high level programming language) and the <code>sp</code> or &quot;stack pointer&quot; will point to the latest address pushed onto the stack by <code>GotoSubRtn</code>. <code>sp</code> stores the index in the <code>stack</code> of the latest address, so <code>sp</code> starts at 0 and increments by 1 every time <code>GotoSubRtn</code> gets called, and decrements by 1 every time <code>Return</code> gets called.</p>
+<h3>Reading In Game Files</h3>
+<p>Before we do anything with <code>Emulator</code>, we need a way to instantiate it. For this <code>Emulator</code> exposes the <code>with_game_file_and_logger</code> function:</p>
+<pre style="background-color:#2b303b;">
+<span style="background-color:#2b303b;color:#65737e;">/// Creates an Emulator with a path to a CHIP-8 game file and an optional logger.
+///
+/// # Examples
+///
+/// ```
+/// # use std::io::Error;
+/// # use chipotle8::Emulator;
+/// # fn main() -&gt; Result&lt;(), Error&gt; {
+/// let mut emulator = Emulator::with_game_file_and_logger(&quot;games/PONG&quot;, None)?;
+///
+/// # Ok(())
+/// # }
+
+</span><span style="background-color:#2b303b;color:#b48ead;">pub fn </span><span style="background-color:#2b303b;color:#8fa1b3;">with_game_file_and_logger</span><span style="background-color:#2b303b;color:#c0c5ce;">&lt;L: Into&lt;Option&lt;slog::Logger&gt;&gt;&gt;(
+  </span><span style="background-color:#2b303b;color:#bf616a;">path_to_game_file</span><span style="background-color:#2b303b;color:#c0c5ce;">: &amp;</span><span style="background-color:#2b303b;color:#b48ead;">str</span><span style="background-color:#2b303b;color:#c0c5ce;">,
+  </span><span style="background-color:#2b303b;color:#bf616a;">logger</span><span style="background-color:#2b303b;color:#c0c5ce;">: L,
+) -&gt; Result&lt;</span><span style="background-color:#2b303b;color:#b48ead;">Self</span><span style="background-color:#2b303b;color:#c0c5ce;">, Error&gt; {
+    </span><span style="background-color:#2b303b;color:#65737e;">// Note: `Into` trick allows passing `Logger` directly, without the `Some` part.
+    // See http://xion.io/post/code/rust-optional-args.html
+
+    </span><span style="background-color:#2b303b;color:#b48ead;">let mut</span><span style="background-color:#2b303b;color:#c0c5ce;"> emulator = Emulator::new(logger);
+    </span><span style="background-color:#2b303b;color:#b48ead;">let</span><span style="background-color:#2b303b;color:#c0c5ce;"> res = emulator.</span><span style="background-color:#2b303b;color:#96b5b4;">initialize</span><span style="background-color:#2b303b;color:#c0c5ce;">(path_to_game_file);
+    </span><span style="background-color:#2b303b;color:#b48ead;">if</span><span style="background-color:#2b303b;color:#c0c5ce;"> res.</span><span style="background-color:#2b303b;color:#96b5b4;">is_ok</span><span style="background-color:#2b303b;color:#c0c5ce;">() {
+      Ok(emulator)
+    } </span><span style="background-color:#2b303b;color:#b48ead;">else </span><span style="background-color:#2b303b;color:#c0c5ce;">{
+      Err(res.</span><span style="background-color:#2b303b;color:#96b5b4;">err</span><span style="background-color:#2b303b;color:#c0c5ce;">().</span><span style="background-color:#2b303b;color:#96b5b4;">unwrap</span><span style="background-color:#2b303b;color:#c0c5ce;">())
+    }
+}
+</span></pre>
+<p><code>initialize</code> does the bulk of the work, taking a <code>/path/to/game/file</code> <code>&amp;str</code>.</p>
+<pre style="background-color:#2b303b;">
+<span style="background-color:#2b303b;color:#65737e;">/// Read in a game file and initialize the necessary registers.
+///
+/// Returns an error if we fail to open the game file
+</span><span style="background-color:#2b303b;color:#b48ead;">fn </span><span style="background-color:#2b303b;color:#8fa1b3;">initialize</span><span style="background-color:#2b303b;color:#c0c5ce;">(&amp;</span><span style="background-color:#2b303b;color:#b48ead;">mut </span><span style="background-color:#2b303b;color:#bf616a;">self</span><span style="background-color:#2b303b;color:#c0c5ce;">, </span><span style="background-color:#2b303b;color:#bf616a;">path</span><span style="background-color:#2b303b;color:#c0c5ce;">: &amp;</span><span style="background-color:#2b303b;color:#b48ead;">str</span><span style="background-color:#2b303b;color:#c0c5ce;">) -&gt; Result&lt;(), Error&gt; {
+    </span><span style="background-color:#2b303b;color:#b48ead;">let</span><span style="background-color:#2b303b;color:#c0c5ce;"> game_file = File::open(path).</span><span style="background-color:#2b303b;color:#96b5b4;">unwrap</span><span style="background-color:#2b303b;color:#c0c5ce;">();
+
+    </span><span style="background-color:#2b303b;color:#bf616a;">self</span><span style="background-color:#2b303b;color:#c0c5ce;">.</span><span style="background-color:#2b303b;color:#96b5b4;">read_game_file</span><span style="background-color:#2b303b;color:#c0c5ce;">(game_file)?;
+    </span><span style="background-color:#2b303b;color:#bf616a;">self</span><span style="background-color:#2b303b;color:#c0c5ce;">.sp = </span><span style="background-color:#2b303b;color:#d08770;">0</span><span style="background-color:#2b303b;color:#c0c5ce;">;
+    </span><span style="background-color:#2b303b;color:#bf616a;">self</span><span style="background-color:#2b303b;color:#c0c5ce;">.pc = </span><span style="background-color:#2b303b;color:#d08770;">STARTING_MEMORY_BYTE</span><span style="background-color:#2b303b;color:#c0c5ce;">;
+
+    debug!(</span><span style="background-color:#2b303b;color:#bf616a;">self</span><span style="background-color:#2b303b;color:#c0c5ce;">.logger, &quot;</span><span style="background-color:#2b303b;color:#a3be8c;">initialized emulator with game file: {}</span><span style="background-color:#2b303b;color:#c0c5ce;">&quot;, path);
+
+    Ok(())
+}
+</span></pre>
+<p>Here <code>STARTING_MEMORY_BYTE</code> is equal to <code>512</code> since <a href="https://en.wikipedia.org/wiki/CHIP-8#Memory">the first 512 bytes were originally for the interpreter code itself, and we want to emulate the original hardware as much as we can</a>.</p>
+<p><code>read_game_file</code> is simply reading the game file bytes in from the <code>File</code> and then copying them into memory.</p>
+<pre style="background-color:#2b303b;">
+<span style="background-color:#2b303b;color:#65737e;">/// Read in a CHIP 8 game file and load it into memory starting at byte index 512
+    </span><span style="background-color:#2b303b;color:#b48ead;">fn </span><span style="background-color:#2b303b;color:#8fa1b3;">read_game_file</span><span style="background-color:#2b303b;color:#c0c5ce;">(&amp;</span><span style="background-color:#2b303b;color:#b48ead;">mut </span><span style="background-color:#2b303b;color:#bf616a;">self</span><span style="background-color:#2b303b;color:#c0c5ce;">, </span><span style="background-color:#2b303b;color:#bf616a;">file</span><span style="background-color:#2b303b;color:#c0c5ce;">: File) -&gt; Result&lt;(), Error&gt; {
+        </span><span style="background-color:#2b303b;color:#b48ead;">let</span><span style="background-color:#2b303b;color:#c0c5ce;"> buf = </span><span style="background-color:#2b303b;color:#96b5b4;">read_file_to_vec</span><span style="background-color:#2b303b;color:#c0c5ce;">(file)?;
+
+        </span><span style="background-color:#2b303b;color:#b48ead;">let</span><span style="background-color:#2b303b;color:#c0c5ce;"> err_msg = &quot;</span><span style="background-color:#2b303b;color:#a3be8c;">file is too large</span><span style="background-color:#2b303b;color:#c0c5ce;">&quot;.</span><span style="background-color:#2b303b;color:#96b5b4;">to_string</span><span style="background-color:#2b303b;color:#c0c5ce;">();
+        assert!(buf.</span><span style="background-color:#2b303b;color:#96b5b4;">len</span><span style="background-color:#2b303b;color:#c0c5ce;">() &lt; </span><span style="background-color:#2b303b;color:#d08770;">GAME_FILE_MEMORY_SIZE</span><span style="background-color:#2b303b;color:#c0c5ce;">, err_msg);
+
+        </span><span style="background-color:#2b303b;color:#b48ead;">let</span><span style="background-color:#2b303b;color:#c0c5ce;"> game_file_range = </span><span style="background-color:#2b303b;color:#d08770;">STARTING_MEMORY_BYTE</span><span style="background-color:#2b303b;color:#c0c5ce;">..(</span><span style="background-color:#2b303b;color:#d08770;">STARTING_MEMORY_BYTE </span><span style="background-color:#2b303b;color:#c0c5ce;">+ buf.</span><span style="background-color:#2b303b;color:#96b5b4;">len</span><span style="background-color:#2b303b;color:#c0c5ce;">());
+        </span><span style="background-color:#2b303b;color:#bf616a;">self</span><span style="background-color:#2b303b;color:#c0c5ce;">.memory[game_file_range].</span><span style="background-color:#2b303b;color:#96b5b4;">copy_from_slice</span><span style="background-color:#2b303b;color:#c0c5ce;">(&amp;buf);
+
+        Ok(())
+    }
+</span></pre>
+<h3>Op Codes</h3>
+<p>Remember that op codes (also called instructions) are 16-bit numbers that we are executable by our emulator, and do different things depending on what those 16-bits are. <code>0xFB0A</code> is an op code we've decided to give the enum variant name <code>KeyOpGet</code>. <code>0xFB0B</code> however is not an op code, because only a certain subset of all possible 16-bit numbers are interpretible as a CHIP-8 instruction.</p>
+<p>We're going to have a helluva time debugging if we mistake <code>0xFB0B</code> for <code>0xFB0A</code>, so we want our emulator explicitly rule out the possibility of fat fingering op code numbers. Thanks to Rust's exhaustive and nested pattern matching abilities***, this is relatively straighforward.</p>
+<p>In the snippet below you'll see the bulk of our <code>Op</code> <code>enum</code>'s code for converting from the raw <code>u16</code> numbers of our op codes to the more structured <code>Op</code>. While we could work directly with the <code>u16</code>'s (<a href="https://github.com/AlexEne/rust-chip8/blob/master/src/cpu.rs#L48">check out this other CHIP-8 implementation in Rust</a> where the developer works only with <code>u16</code>'s) it will improve readability and refactorability if we give well-named types to the data we're working with.</p>
+<p>Recall that a nibble is 4 bits (a nibble is less than a byte, right? :D) and LSB and MSB stand for least significant byte and most significant byte, respectively.</p>
+<pre style="background-color:#2b303b;">
+<span style="background-color:#2b303b;color:#b48ead;">type </span><span style="background-color:#2b303b;color:#c0c5ce;">Address = </span><span style="background-color:#2b303b;color:#b48ead;">u16</span><span style="background-color:#2b303b;color:#c0c5ce;">;
+
+</span><span style="background-color:#2b303b;color:#b48ead;">impl </span><span style="background-color:#2b303b;color:#c0c5ce;">From&lt;Address&gt; </span><span style="background-color:#2b303b;color:#b48ead;">for </span><span style="background-color:#2b303b;color:#c0c5ce;">Op {
+    </span><span style="background-color:#2b303b;color:#b48ead;">fn </span><span style="background-color:#2b303b;color:#8fa1b3;">from</span><span style="background-color:#2b303b;color:#c0c5ce;">(</span><span style="background-color:#2b303b;color:#bf616a;">item</span><span style="background-color:#2b303b;color:#c0c5ce;">: Address) -&gt; </span><span style="background-color:#2b303b;color:#b48ead;">Self </span><span style="background-color:#2b303b;color:#c0c5ce;">{
+        </span><span style="background-color:#2b303b;color:#b48ead;">let</span><span style="background-color:#2b303b;color:#c0c5ce;"> mask = </span><span style="background-color:#2b303b;color:#d08770;">0xF</span><span style="background-color:#2b303b;color:#c0c5ce;">;
+
+        </span><span style="background-color:#2b303b;color:#65737e;">// these are the 4 nibbles of item, where nibb_1 is the MSB and nibb_4 is the LSB
+        </span><span style="background-color:#2b303b;color:#b48ead;">let</span><span style="background-color:#2b303b;color:#c0c5ce;"> nibb_1 = ((item &gt;&gt; </span><span style="background-color:#2b303b;color:#d08770;">12</span><span style="background-color:#2b303b;color:#c0c5ce;">) &amp; mask) as Nibble;
+        </span><span style="background-color:#2b303b;color:#b48ead;">let</span><span style="background-color:#2b303b;color:#c0c5ce;"> nibb_2 = ((item &gt;&gt; </span><span style="background-color:#2b303b;color:#d08770;">8</span><span style="background-color:#2b303b;color:#c0c5ce;">) &amp; mask) as Nibble;
+        </span><span style="background-color:#2b303b;color:#b48ead;">let</span><span style="background-color:#2b303b;color:#c0c5ce;"> nibb_3 = ((item &gt;&gt; </span><span style="background-color:#2b303b;color:#d08770;">4</span><span style="background-color:#2b303b;color:#c0c5ce;">) &amp; mask) as Nibble;
+        </span><span style="background-color:#2b303b;color:#b48ead;">let</span><span style="background-color:#2b303b;color:#c0c5ce;"> nibb_4 = (item &amp; mask) as Nibble;
+        </span><span style="background-color:#2b303b;color:#b48ead;">let</span><span style="background-color:#2b303b;color:#c0c5ce;"> nibbles = [nibb_1, nibb_2, nibb_3, nibb_4];
+
+        </span><span style="background-color:#2b303b;color:#b48ead;">let</span><span style="background-color:#2b303b;color:#c0c5ce;"> panic_msg = format!(&quot;</span><span style="background-color:#2b303b;color:#a3be8c;">unknown Address: </span><span style="background-color:#2b303b;color:#d08770;">{}</span><span style="background-color:#2b303b;color:#c0c5ce;">&quot;, item);
+
+        </span><span style="background-color:#2b303b;color:#b48ead;">match</span><span style="background-color:#2b303b;color:#c0c5ce;"> nibbles {
+            [</span><span style="background-color:#2b303b;color:#d08770;">0x0</span><span style="background-color:#2b303b;color:#c0c5ce;">, n2, n3, n4] =&gt; </span><span style="background-color:#2b303b;color:#b48ead;">match</span><span style="background-color:#2b303b;color:#c0c5ce;"> n4 {
+                </span><span style="background-color:#2b303b;color:#d08770;">0x0 </span><span style="background-color:#2b303b;color:#c0c5ce;">=&gt; Op::DispClear,
+                </span><span style="background-color:#2b303b;color:#d08770;">0xE </span><span style="background-color:#2b303b;color:#c0c5ce;">=&gt; Op::Return,
+                _ =&gt; Op::CallRca(n2, n3, n4),
+            },
+            [</span><span style="background-color:#2b303b;color:#d08770;">0x1</span><span style="background-color:#2b303b;color:#c0c5ce;">, n2, n3, n4] =&gt; Op::Goto(n2, n3, n4),
+            [</span><span style="background-color:#2b303b;color:#d08770;">0x2</span><span style="background-color:#2b303b;color:#c0c5ce;">, n2, n3, n4] =&gt; Op::GotoSubRtn(n2, n3, n4),
+            [</span><span style="background-color:#2b303b;color:#d08770;">0x3</span><span style="background-color:#2b303b;color:#c0c5ce;">, n2, n3, n4] =&gt; Op::CondVxEq(n2, n3, n4),
+            [</span><span style="background-color:#2b303b;color:#d08770;">0x4</span><span style="background-color:#2b303b;color:#c0c5ce;">, n2, n3, n4] =&gt; Op::CondVxNe(n2, n3, n4),
+            [</span><span style="background-color:#2b303b;color:#d08770;">0x5</span><span style="background-color:#2b303b;color:#c0c5ce;">, n2, n3, </span><span style="background-color:#2b303b;color:#d08770;">0x0</span><span style="background-color:#2b303b;color:#c0c5ce;">] =&gt; Op::CondVxVyEq(n2, n3),
+            [</span><span style="background-color:#2b303b;color:#d08770;">0x6</span><span style="background-color:#2b303b;color:#c0c5ce;">, n2, n3, n4] =&gt; Op::ConstSetVx(n2, n3, n4),
+            [</span><span style="background-color:#2b303b;color:#d08770;">0x7</span><span style="background-color:#2b303b;color:#c0c5ce;">, n2, n3, n4] =&gt; Op::ConstAddVx(n2, n3, n4),
+            [</span><span style="background-color:#2b303b;color:#d08770;">0x8</span><span style="background-color:#2b303b;color:#c0c5ce;">, n2, n3, n4] =&gt; </span><span style="background-color:#2b303b;color:#b48ead;">match</span><span style="background-color:#2b303b;color:#c0c5ce;"> n4 {
+                </span><span style="background-color:#2b303b;color:#d08770;">0x0 </span><span style="background-color:#2b303b;color:#c0c5ce;">=&gt; Op::AssignVyToVx(n2, n3),
+                </span><span style="background-color:#2b303b;color:#d08770;">0x1 </span><span style="background-color:#2b303b;color:#c0c5ce;">=&gt; Op::BitOpOr(n2, n3),
+                </span><span style="background-color:#2b303b;color:#d08770;">0x2 </span><span style="background-color:#2b303b;color:#c0c5ce;">=&gt; Op::BitOpAnd(n2, n3),
+                </span><span style="background-color:#2b303b;color:#d08770;">0x3 </span><span style="background-color:#2b303b;color:#c0c5ce;">=&gt; Op::BitOpXor(n2, n3),
+                </span><span style="background-color:#2b303b;color:#d08770;">0x4 </span><span style="background-color:#2b303b;color:#c0c5ce;">=&gt; Op::MathVxAddVy(n2, n3),
+                </span><span style="background-color:#2b303b;color:#d08770;">0x5 </span><span style="background-color:#2b303b;color:#c0c5ce;">=&gt; Op::MathVxMinusVy(n2, n3),
+                </span><span style="background-color:#2b303b;color:#d08770;">0x6 </span><span style="background-color:#2b303b;color:#c0c5ce;">=&gt; Op::BitOpRtShift(n2),
+                </span><span style="background-color:#2b303b;color:#d08770;">0x7 </span><span style="background-color:#2b303b;color:#c0c5ce;">=&gt; Op::MathVyMinusVx(n2, n3),
+                </span><span style="background-color:#2b303b;color:#d08770;">0xE </span><span style="background-color:#2b303b;color:#c0c5ce;">=&gt; Op::BitOpLftShift(n2),
+                _ =&gt; panic!(panic_msg),
+            },
+            [</span><span style="background-color:#2b303b;color:#d08770;">0x9</span><span style="background-color:#2b303b;color:#c0c5ce;">, n2, n3, </span><span style="background-color:#2b303b;color:#d08770;">0</span><span style="background-color:#2b303b;color:#c0c5ce;">] =&gt; Op::CondVxVyNe(n2, n3),
+            [</span><span style="background-color:#2b303b;color:#d08770;">0xA</span><span style="background-color:#2b303b;color:#c0c5ce;">, n2, n3, n4] =&gt; Op::MemSetI(n2, n3, n4),
+            [</span><span style="background-color:#2b303b;color:#d08770;">0xB</span><span style="background-color:#2b303b;color:#c0c5ce;">, n2, n3, n4] =&gt; Op::GotoPlusV0(n2, n3, n4),
+            [</span><span style="background-color:#2b303b;color:#d08770;">0xC</span><span style="background-color:#2b303b;color:#c0c5ce;">, n2, n3, n4] =&gt; Op::Rand(n2, n3, n4),
+            [</span><span style="background-color:#2b303b;color:#d08770;">0xD</span><span style="background-color:#2b303b;color:#c0c5ce;">, n2, n3, n4] =&gt; Op::DispDraw(n2, n3, n4),
+            [</span><span style="background-color:#2b303b;color:#d08770;">0xE</span><span style="background-color:#2b303b;color:#c0c5ce;">, n2, n3, n4] =&gt; </span><span style="background-color:#2b303b;color:#b48ead;">match </span><span style="background-color:#2b303b;color:#c0c5ce;">[n3, n4] {
+                [</span><span style="background-color:#2b303b;color:#d08770;">0x9</span><span style="background-color:#2b303b;color:#c0c5ce;">, </span><span style="background-color:#2b303b;color:#d08770;">0xE</span><span style="background-color:#2b303b;color:#c0c5ce;">] =&gt; Op::KeyOpEqVx(n2),
+                [</span><span style="background-color:#2b303b;color:#d08770;">0xA</span><span style="background-color:#2b303b;color:#c0c5ce;">, </span><span style="background-color:#2b303b;color:#d08770;">0x1</span><span style="background-color:#2b303b;color:#c0c5ce;">] =&gt; Op::KeyOpNeVx(n2),
+                _ =&gt; panic!(panic_msg),
+            },
+            [</span><span style="background-color:#2b303b;color:#d08770;">0xF</span><span style="background-color:#2b303b;color:#c0c5ce;">, n2, n3, n4] =&gt; </span><span style="background-color:#2b303b;color:#b48ead;">match </span><span style="background-color:#2b303b;color:#c0c5ce;">[n3, n4] {
+                [</span><span style="background-color:#2b303b;color:#d08770;">0x0</span><span style="background-color:#2b303b;color:#c0c5ce;">, </span><span style="background-color:#2b303b;color:#d08770;">0x7</span><span style="background-color:#2b303b;color:#c0c5ce;">] =&gt; Op::DelayGet(n2),
+                [</span><span style="background-color:#2b303b;color:#d08770;">0x0</span><span style="background-color:#2b303b;color:#c0c5ce;">, </span><span style="background-color:#2b303b;color:#d08770;">0xA</span><span style="background-color:#2b303b;color:#c0c5ce;">] =&gt; Op::KeyOpGet(n2),
+                [</span><span style="background-color:#2b303b;color:#d08770;">0x1</span><span style="background-color:#2b303b;color:#c0c5ce;">, </span><span style="background-color:#2b303b;color:#d08770;">0x5</span><span style="background-color:#2b303b;color:#c0c5ce;">] =&gt; Op::DelaySet(n2),
+                [</span><span style="background-color:#2b303b;color:#d08770;">0x1</span><span style="background-color:#2b303b;color:#c0c5ce;">, </span><span style="background-color:#2b303b;color:#d08770;">0x8</span><span style="background-color:#2b303b;color:#c0c5ce;">] =&gt; Op::SoundSet(n2),
+                [</span><span style="background-color:#2b303b;color:#d08770;">0x1</span><span style="background-color:#2b303b;color:#c0c5ce;">, </span><span style="background-color:#2b303b;color:#d08770;">0xE</span><span style="background-color:#2b303b;color:#c0c5ce;">] =&gt; Op::MemIPlusEqVx(n2),
+                [</span><span style="background-color:#2b303b;color:#d08770;">0x2</span><span style="background-color:#2b303b;color:#c0c5ce;">, </span><span style="background-color:#2b303b;color:#d08770;">0x9</span><span style="background-color:#2b303b;color:#c0c5ce;">] =&gt; Op::MemISetSprite(n2),
+                [</span><span style="background-color:#2b303b;color:#d08770;">0x3</span><span style="background-color:#2b303b;color:#c0c5ce;">, </span><span style="background-color:#2b303b;color:#d08770;">0x3</span><span style="background-color:#2b303b;color:#c0c5ce;">] =&gt; Op::Bcd(n2),
+                [</span><span style="background-color:#2b303b;color:#d08770;">0x5</span><span style="background-color:#2b303b;color:#c0c5ce;">, </span><span style="background-color:#2b303b;color:#d08770;">0x5</span><span style="background-color:#2b303b;color:#c0c5ce;">] =&gt; Op::RegDump(n2),
+                [</span><span style="background-color:#2b303b;color:#d08770;">0x6</span><span style="background-color:#2b303b;color:#c0c5ce;">, </span><span style="background-color:#2b303b;color:#d08770;">0x5</span><span style="background-color:#2b303b;color:#c0c5ce;">] =&gt; Op::RegLoad(n2),
+                _ =&gt; panic!(panic_msg),
+            },
+            _ =&gt; panic!(panic_msg),
+        }
+    }
+}
+</span></pre>
+<p>Now that we have a clear picture of how <code>Op</code>s are implemented, let's look at the implementation of a few of the more complex op codes. Specifically the <code>GotoSubRtn</code> (<code>0x2NNN</code>), <code>DelayGet</code> (<code>0xFX07</code>), <code>KeyOpGet</code> (<code>0xFX0A</code>),  and <code>DispDraw</code> (<code>0xDXYN</code>). I choose these because I found them to be the least straightforward to implement and so represent the highest level of complexity I think you'd find in implementing your own CHIP-8 emulator.</p>
+<h4><a href="https://github.com/Melvillian/chipotle8/blob/blog-article/src/lib.rs#L364">GotoSubRtn</a></h4>
+<p>The <code>GotoSubRtn</code> op code takes 3 nibbles <code>msb</code>, <code>b</code>, and <code>lsb</code> representing an index in <code>memory</code> where the code for a subroutine begins and saves the next to-be-executed instruction on the stack before jumping the program counter to the subroutine.</p>
+<pre style="background-color:#2b303b;">
+<span style="background-color:#2b303b;color:#c0c5ce;">Op::GotoSubRtn(msb, b, lsb) =&gt; {
+    </span><span style="background-color:#2b303b;color:#65737e;">// save the current instruction for when the subroutine returns;
+    </span><span style="background-color:#2b303b;color:#bf616a;">self</span><span style="background-color:#2b303b;color:#c0c5ce;">.stack[</span><span style="background-color:#2b303b;color:#bf616a;">self</span><span style="background-color:#2b303b;color:#c0c5ce;">.sp] = </span><span style="background-color:#2b303b;color:#bf616a;">self</span><span style="background-color:#2b303b;color:#c0c5ce;">.pc + </span><span style="background-color:#2b303b;color:#d08770;">2</span><span style="background-color:#2b303b;color:#c0c5ce;">;
+    </span><span style="background-color:#2b303b;color:#bf616a;">self</span><span style="background-color:#2b303b;color:#c0c5ce;">.sp += </span><span style="background-color:#2b303b;color:#d08770;">1</span><span style="background-color:#2b303b;color:#c0c5ce;">;
+
+    </span><span style="background-color:#2b303b;color:#65737e;">// jump to the subroutine
+    </span><span style="background-color:#2b303b;color:#bf616a;">self</span><span style="background-color:#2b303b;color:#c0c5ce;">.pc = </span><span style="background-color:#2b303b;color:#96b5b4;">three_nibbles_to_usize</span><span style="background-color:#2b303b;color:#c0c5ce;">(msb, b, lsb);
+}
+</span></pre>
+<p>I think it's very hard to understand this op code without seeing its execution play out in front of you. So let's visual this baby.</p>
+<p>(image of empty stack and program counter pointing at memory location <code>0x200</code>).</p>
+<p>Imagine we first load a game file into our emulator and we're ready to begin execution. Our <code>stack</code> is empty and the <code>pc</code> is at memory location <code>512</code> (<code>0x200</code>). At memory location <code>0x200</code> is the instruction <code>0x2348</code>, which is our <code>GotoSubRtn</code> instruction which will jump to memory location <code>840</code> (<code>0x348</code>). We begin execution of this instruction by saving our current point in program execution on the <code>stack</code>, which leaves us looking like:</p>
+<p>(image of <code>0x201</code> on the stack and <code>sp</code> incremented by 1)</p>
+<p>When I first wrote this I introduced a bug by storing memory location <code>0x200</code> on the <code>stack</code> because I thought we wanted to save the current point of execution. Yet when I tested it I found I had introduced an infinite loop because immediately after resuming execution at <code>0x200</code> we'd call <code>GotoSubRtn</code> again and do the same execution again! In order for the program to truly progress we want to jump to <em>the next</em> instruction after <code>GotoSubRtn</code>, so that way when the subroutine returns we'll not enter into an infinite loop. Think of this like how when you have a line of code in a normal language Python or Javascript which calls a function, after that function completes you want to move on to the next line of code.</p>
+<p>Now we complete execution by jumping to memory location <code>0x348</code>, and our system looks like:</p>
+<p>(image same as before but now <code>pc</code> is at <code>0x348</code>).</p>
+<p>And we're done! I won't go in to depth about what the inverse op code, <code>Return</code> looks, but it basically unwinds this computation by popping the <code>0x201</code> off the <code>stack</code> and jumps to that location in <code>memory</code>.</p>
+<h4><a href="https://github.com/Melvillian/chipotle8/blob/blog-article/src/lib.rs#L542">DelayGet</a></h4>
+<p>It's time to get a little whimsical dear reader****. There exist two worlds, the electric silicon world of the Emulator, and our squishy Meatspace world. Time passes every so slowly in Meatspace when compared to the <strong>Emulator</strong> world, which advances at the speed of a cycle (~250 <em>micro</em> seconds by my counting!). But if the two worlds are to coalesce, and squishy user enjoy the electric game, there must be a way to relate the times of the two worlds.</p>
+<p>This is what the CHIP-8's timers are for.</p>
+<p>Our <code>delay_timer</code> and <code>sound_timer</code> both clock in at 60Hz, which means 60 times a second (or every 1000ms / 60 = 16.66 milliseconds) the timers will decrement their numeric values. This is useful when a CHIP-8 game needs to know how much user time has passed. For example a CHIP-8 game might want to know if 5 seconds passed so it can stop showing the &quot;You Died&quot; image and switch to the &quot;New Game&quot; image, so it will set the <code>delay_timer</code> to <code>300</code> and idly loop until it sees the <code>delay_timer</code> value equals <code>0</code> (<code>60Hz * 5 seconds == 300 cycles</code>). It's up to our Emulator to ensure these timers are set and decremented faithfully, which we'll do using Rust's <code>std::time</code> module.</p>
+<p>We're going to look in depth at the <code>delay_timer</code> since it's the more complicated timer to implement, but before we do let's look briefly at the <code>sound_timer</code>. Our Emulator only deals with the <code>sound_timer</code> in 3 different sections of code. When the Emulator is first created the <code>sound_timer</code> gets initalized to a value of <code>0</code>. There is a single op code related to the <code>sound_timer</code>, <code>Op::SoundSet(x)</code>, which sets the <code>sound_timer</code> to the <code>u8</code> value stored in register <code>v[x]</code>. And finally after every <code>CYCLE_INTERVAL_MS</code> milliseconds (which is 16.66ms) we decrement the <code>sound_timer</code> by 1. That's all there is to the <code>sound_timer!</code></p>
+<p><code>delay_timer</code>'s implementation is very similar to <code>sound_timer</code>'s, except it has the additional op code <code>Op::DelayGet()</code> which reads the value of the <code>delay_timer</code>. Just like the <code>sound_timer</code> it gets initialized to <code>0</code> on emulator startup. Let's look at the code for <code>Op::DelaySet</code></p>
+<pre style="background-color:#2b303b;">
+<span style="background-color:#2b303b;color:#c0c5ce;">Op::DelaySet(x) =&gt; {
+    </span><span style="background-color:#2b303b;color:#bf616a;">self</span><span style="background-color:#2b303b;color:#c0c5ce;">.delay_timer = </span><span style="background-color:#2b303b;color:#bf616a;">self</span><span style="background-color:#2b303b;color:#c0c5ce;">.v[x as </span><span style="background-color:#2b303b;color:#b48ead;">usize</span><span style="background-color:#2b303b;color:#c0c5ce;">];
+    </span><span style="background-color:#2b303b;color:#bf616a;">self</span><span style="background-color:#2b303b;color:#c0c5ce;">.delay_timer_settime = time::Instant::now();
+}
+</span></pre>
+<p>Pretty straightforward. The Emulator looks at the current byte in the <code>Vx</code> register and assigns it to the <code>delay_timer</code>... except why do we need this <code>delay_timer_settime</code> initialized to the current time?? <code>delay_timer_settime</code> is crucial for the correct implementation of the <code>delay_timer</code>'s last op code, <code>Op::DelayGet</code>*****. To understand why, let's look at a quick-and-dirty implementation of <code>Op::DelayGet</code> and consider what could go wrong with it. Here it is:</p>
+<pre style="background-color:#2b303b;">
+<span style="background-color:#2b303b;color:#c0c5ce;">Op::DelayGet() =&gt; {
+    </span><span style="background-color:#2b303b;color:#bf616a;">self</span><span style="background-color:#2b303b;color:#c0c5ce;">.delay_timer
+}
+</span></pre>
+<p>Can't get much simpler than that! However there is a subtle problem lurking here. Recall that the Emulator's contract with any CHIP-8 game file is that for every <code>CYCLE_INTERVAL_MS == 16.66</code> milliseconds of user time that passes the Emulator will automatically decrement the <code>delay_timer</code> by <code>1</code>. The way to do this (and we'll look at this in more depth in a bit) is after every Emulator cycle, check if 16.66ms have passed since the last time we decremented <code>delay_timer</code> and if so we decrement by <code>1</code>. This works, as long as our Emulator runs at its normal clippy rate of many cycles per millisecond. This will be true for 99.999% of the time. But because you're probably not running this on a <a href="https://en.wikipedia.org/wiki/Real-time_operating_system">Realtime Operating System</a> like <a href="https://www.freertos.org/about-RTOS.html">FreeRTOS</a>, whatever underlying OS you're running the Emulator on provides no guarantees that it will execute your Emulator process in a timely manner. So it's possible that more than 16.66ms will pass in between a call to <code>Op::DelayGet</code> and the previous cycle, which means <code>delay_timer</code> was not decremented, which finally means the value returned by <code>Op::DelayGet</code> will be higher than it should be (if 16.66ms had passed, <code>delay_timer</code> would be <code>1</code> higher than the correct value, if <code>33.33</code> had passed, <code>2</code> higher, etc.).</p>
+<p>Now that you see the problem, let's look at the solution:</p>
+<pre style="background-color:#2b303b;">
+<span style="background-color:#2b303b;color:#b48ead;">fn </span><span style="background-color:#2b303b;color:#8fa1b3;">get_delay_state</span><span style="background-color:#2b303b;color:#c0c5ce;">(&amp;</span><span style="background-color:#2b303b;color:#bf616a;">self</span><span style="background-color:#2b303b;color:#c0c5ce;">) -&gt; </span><span style="background-color:#2b303b;color:#b48ead;">u8 </span><span style="background-color:#2b303b;color:#c0c5ce;">{
+    </span><span style="background-color:#2b303b;color:#65737e;">// we need to do this more complicated calculation because if we did the simpler
+    // implementation (just a `return self.delay_timer`) then there&#39;s an edge case
+    // where we would return an incorrect value for the timer. This edge case happens
+    // in the possible (though extremely unlikely since it takes our Emulator ~2ms to
+    // execute its most lengthy instruction `DispDraw`) case that more than CYCLE_INTERVAL_MS
+    // number of milliseconds have passed since we last called `.cycle` where we decrement
+    // the `delay_timer`.
+    //
+    // Since the Emulator is supposed to guarantee that `delay_timer` decrements every
+    // CYCLE_INTERVAL_MS ms, yet CYCLE_INTERVAL_MS ms have passed without calling `.cycle`
+    // and decrementing the `delay_timer`, we&#39;ll return a higher number for `delay_timer`
+    // than we should.
+    //
+    // To remedy this, every time `get_delay_state` gets called we need to account
+    // for the real time that has passed since we last decremented the `delay_timer`
+    // by calculating how many CYCLE_INTERVAL_MS number of milliseconds have passed.
+    </span><span style="background-color:#2b303b;color:#b48ead;">let</span><span style="background-color:#2b303b;color:#c0c5ce;"> ms_since_last_delay_set =
+        (time::Instant::now() - </span><span style="background-color:#2b303b;color:#bf616a;">self</span><span style="background-color:#2b303b;color:#c0c5ce;">.delay_timer_settime).</span><span style="background-color:#2b303b;color:#96b5b4;">as_millis</span><span style="background-color:#2b303b;color:#c0c5ce;">() as </span><span style="background-color:#2b303b;color:#b48ead;">u64</span><span style="background-color:#2b303b;color:#c0c5ce;">;
+    </span><span style="background-color:#2b303b;color:#b48ead;">let</span><span style="background-color:#2b303b;color:#c0c5ce;"> num_decrement = (ms_since_last_delay_set / </span><span style="background-color:#2b303b;color:#d08770;">CYCLE_INTERVAL_MS</span><span style="background-color:#2b303b;color:#c0c5ce;">) as </span><span style="background-color:#2b303b;color:#b48ead;">u8</span><span style="background-color:#2b303b;color:#c0c5ce;">;
+
+    </span><span style="background-color:#2b303b;color:#bf616a;">self</span><span style="background-color:#2b303b;color:#c0c5ce;">.delay_timer.</span><span style="background-color:#2b303b;color:#96b5b4;">saturating_sub</span><span style="background-color:#2b303b;color:#c0c5ce;">(num_decrement)
+}
+</span></pre>
+<p>First we figure out how many multiples of <code>CYCLE_INTERVAL_MS</code> have passed since we last updated the <code>delay_timer</code>, and then we decrement
+<code>delay_timer</code> that number of times. If less than 16.66ms have passed, then Rust's rounding rules for <code>u8</code>'s will lead to <code>num_decrement</code> equaling <code>0</code>. And we use <code>saturating_sub</code> instead of simply <code>-</code> because the CHIP-8 spec says <code>delay_timer</code> should decrement until it reaches <code>0</code> and then stay at <code>0</code> until a call to <code>Op::DelaySet</code> changes it.</p>
+<p>Woot! That's all for <code>Op::DelayGet</code> :). This article is getting a wee long and if I were you I'd be tired as this point, so let's wrap up Part 1 with a final dive into CHIP-8's juiciest op code: <code>Op::DispDraw</code>. This fine fellow draws black and white pixels to the Emulator's 64x32 bit screen.</p>
+<h4><a href="https://github.com/Melvillian/chipotle8/blob/blog-article/src/lib.rs#L500">DispDraw</a></h4>
+<p>First let's take a look at what the spec says <code>Op::DispDraw(x, y, N)</code> should do.</p>
+<p>Draws a sprite at coordinate (VX, VY) that has a width of 8 pixels and a height of N pixels. Each row of 8 pixels is read as bit-coded starting from memory location I; I value doesn’t change after the execution of this instruction. As described above, VF is set to 1 if any screen pixels are flipped from set to unset when the sprite is drawn, and to 0 if that doesn’t happen.</p>
+<p>This is easier to understand with an image. Say we start with a blank black screen (all pixel values set to <code>0</code>). When we have the opcode <code>DispDraw(1, 3, 2)</code>, and <code>V1 = 0, V3 = 5</code> and at the memory location <code>memory[I]</code> we have the byte <code>memory[I] = 170</code> (in binary: <code>10101010b</code>), and the memory location we have <code>memory[I + 1] = 100</code> (in binary: <code>01100100b</code>). Then after this opcode the screen will look like:</p>
+<p><img src="./images/dispdraw_example.png" alt="The result of the DispDraw opcode given above" /></p>
+<p>The <code>x</code> argument equals <code>1</code> so we look in the <code>V1</code> register for the correct column index to start drawing at, and using <code>y</code> similarly we find the row index. Beginning with this pixel, we set <code>8 * N</code> pixels based on the <code>N</code> byte values beginning at the address stored in <code>I</code> (<code>memory[I]</code>, <code>memory[I + 1]</code>, <code>memory[I +2] ... memory[I + N]</code>). Pixels values 0-7 come from the bit values of the byte at <code>memory[I]</code>, reading from left to right (most significant bit to least significant bit). The 8-15 pixel values come from <code>memory[I + 1]</code> and so on.</p>
+<p>Check out the code below for this drawing implementation.</p>
+<pre style="background-color:#2b303b;">
+<span style="background-color:#2b303b;color:#c0c5ce;">Op::DispDraw(x, y, height) =&gt; {
+    </span><span style="background-color:#2b303b;color:#b48ead;">let</span><span style="background-color:#2b303b;color:#c0c5ce;"> x_reg = </span><span style="background-color:#2b303b;color:#bf616a;">self</span><span style="background-color:#2b303b;color:#c0c5ce;">.v[x as </span><span style="background-color:#2b303b;color:#b48ead;">usize</span><span style="background-color:#2b303b;color:#c0c5ce;">];
+    </span><span style="background-color:#2b303b;color:#b48ead;">let</span><span style="background-color:#2b303b;color:#c0c5ce;"> y_reg = </span><span style="background-color:#2b303b;color:#bf616a;">self</span><span style="background-color:#2b303b;color:#c0c5ce;">.v[y as </span><span style="background-color:#2b303b;color:#b48ead;">usize</span><span style="background-color:#2b303b;color:#c0c5ce;">];
+
+    </span><span style="background-color:#2b303b;color:#b48ead;">let mut</span><span style="background-color:#2b303b;color:#c0c5ce;"> should_set_vf = </span><span style="background-color:#2b303b;color:#d08770;">false</span><span style="background-color:#2b303b;color:#c0c5ce;">;
+    </span><span style="background-color:#2b303b;color:#b48ead;">for</span><span style="background-color:#2b303b;color:#c0c5ce;"> row_delta in </span><span style="background-color:#2b303b;color:#d08770;">0</span><span style="background-color:#2b303b;color:#c0c5ce;">..height {
+        </span><span style="background-color:#2b303b;color:#b48ead;">let</span><span style="background-color:#2b303b;color:#c0c5ce;"> byte = </span><span style="background-color:#2b303b;color:#bf616a;">self</span><span style="background-color:#2b303b;color:#c0c5ce;">.memory[</span><span style="background-color:#2b303b;color:#bf616a;">self</span><span style="background-color:#2b303b;color:#c0c5ce;">.I as </span><span style="background-color:#2b303b;color:#b48ead;">usize </span><span style="background-color:#2b303b;color:#c0c5ce;">+ row_delta as </span><span style="background-color:#2b303b;color:#b48ead;">usize</span><span style="background-color:#2b303b;color:#c0c5ce;">];
+        </span><span style="background-color:#2b303b;color:#b48ead;">for</span><span style="background-color:#2b303b;color:#c0c5ce;"> col_delta in </span><span style="background-color:#2b303b;color:#d08770;">0</span><span style="background-color:#2b303b;color:#c0c5ce;">..</span><span style="background-color:#2b303b;color:#d08770;">8 </span><span style="background-color:#2b303b;color:#c0c5ce;">{
+            </span><span style="background-color:#2b303b;color:#b48ead;">let</span><span style="background-color:#2b303b;color:#c0c5ce;"> is_black = ((byte &gt;&gt; (</span><span style="background-color:#2b303b;color:#d08770;">7 </span><span style="background-color:#2b303b;color:#c0c5ce;">- col_delta)) &amp; </span><span style="background-color:#2b303b;color:#d08770;">1</span><span style="background-color:#2b303b;color:#c0c5ce;">) == </span><span style="background-color:#2b303b;color:#d08770;">1</span><span style="background-color:#2b303b;color:#c0c5ce;">;
+
+            </span><span style="background-color:#2b303b;color:#b48ead;">let</span><span style="background-color:#2b303b;color:#c0c5ce;"> x_coord = x_reg + col_delta;
+            </span><span style="background-color:#2b303b;color:#b48ead;">let</span><span style="background-color:#2b303b;color:#c0c5ce;"> y_coord = y_reg + row_delta;
+
+            </span><span style="background-color:#2b303b;color:#b48ead;">let</span><span style="background-color:#2b303b;color:#c0c5ce;"> is_collision = </span><span style="background-color:#2b303b;color:#bf616a;">self</span><span style="background-color:#2b303b;color:#c0c5ce;">.graphics.</span><span style="background-color:#2b303b;color:#96b5b4;">xor_set</span><span style="background-color:#2b303b;color:#c0c5ce;">(x_coord, y_coord, is_black);
+            </span><span style="background-color:#2b303b;color:#b48ead;">if</span><span style="background-color:#2b303b;color:#c0c5ce;"> is_collision {
+                should_set_vf = </span><span style="background-color:#2b303b;color:#d08770;">true</span><span style="background-color:#2b303b;color:#c0c5ce;">;
+            }
+        }
+    }
+
+    </span><span style="background-color:#2b303b;color:#b48ead;">if</span><span style="background-color:#2b303b;color:#c0c5ce;"> should_set_vf {
+        </span><span style="background-color:#2b303b;color:#bf616a;">self</span><span style="background-color:#2b303b;color:#c0c5ce;">.v[</span><span style="background-color:#2b303b;color:#d08770;">0xf</span><span style="background-color:#2b303b;color:#c0c5ce;">] = </span><span style="background-color:#2b303b;color:#d08770;">1</span><span style="background-color:#2b303b;color:#c0c5ce;">;
+    } </span><span style="background-color:#2b303b;color:#b48ead;">else </span><span style="background-color:#2b303b;color:#c0c5ce;">{
+        </span><span style="background-color:#2b303b;color:#bf616a;">self</span><span style="background-color:#2b303b;color:#c0c5ce;">.v[</span><span style="background-color:#2b303b;color:#d08770;">0xf</span><span style="background-color:#2b303b;color:#c0c5ce;">] = </span><span style="background-color:#2b303b;color:#d08770;">0</span><span style="background-color:#2b303b;color:#c0c5ce;">;
+    }
+}
+</span></pre>
+<p>You'll notice two interesting things.</p>
+<p>The first is the use of <code>xor_set</code> rather than simply overwriting the graphics buffer's pixel value with the new value (which would look something like <code>self.graphics.buffer[idx] = new_pixel_value</code>). <code>xor_set(x_coord, y_coord, is_black</code> is a function I wrote, and it calculates <code>current_pixel value XOR is_black</code>. We're doing this because apparently CHIP-8 expects its graphics logic to run in <a href="http://www.dickbaldwin.com/java/Java164.htm#xor%20mode%20vs%20paint%20mode">XOR mode</a>. I can't find a good explanation for why CHIP-8 uses XOR mode rather than the more intuitive mode where it simply overwrites the existing pixel with the new pixel value, but them's the rules!</p>
+<p>The second is that <code>should_set_vf</code> variable, which we use to notify the game program there was a collision by setting the VF register to <code>1</code>. This saves the game program lots of space and time by not requiring it to write its own high level collision logic, which is useful in a myriad of games (for example, the game now only needs to check the state of the VF register to know if the ball in Pong overlapped with a paddle, at which point it should emit a sound). This is a good example of the lower level hardware/emulator providing its game developers with high level functionality beyond simple opcodes.</p>
+<h2>Conclusion to Part 1</h2>
+<p>Thank you for reading this guide on building a CHIP-8 emulator. I hope by the end you feel confident in your ability design and write your own! I think this makes a good first project for learning a new language because it incorporates input/output via the keyboard, breaking up your project into multiple files, and graphics to reward you at the end with a simple but fun game.</p>
+<p>In a future blog post I will write up a guide for extending a CHIP-8 emulator with multiplayer networking capabilities. So you and a friend can play pong together on your own homegrown emulator! If you find game programming, networking, and multithreaded applications interesting, stay tuned!</p>
+<p>* It is absolutely bonkers to me that programmers worked with so few resources available to them in the past. It reminds me of <a href="https://all-things-andy-gavin.com/2011/02/04/making-crash-bandicoot-part-3/">Crash Bandicoot co-creator Andy Gavin's epic blog series</a> where he does all sorts of crazy hacks in order to get Crash to fit into the Playstation's memory.</p>
+<p>** You can find this code snippet in <a href="https://github.com/Melvillian/chipotle8/blob/blog-article/examples/pong.rs">the pong example file</a></p>
+<p>*** If you're familiar with Java or Javascript's <code>switch</code> statement, think of Rust's pattern matching as <code>switch</code> on steroids. There's no need for explicit <code>break</code> statements at the end of every <code>case</code> block, the compiler will error out if you do not cover every possible case in the data you're matching against (that's the the <code>_</code> case is for!), and you can nest arbitrarily deep in order to explicitly handle every possible subcase of the data you're matching against. Give <a href="https://doc.rust-lang.org/book/ch18-01-all-the-places-for-patterns.html">this section of The Book</a> a read to learn more :).</p>
+<p>**** Completely unrelated but hillarious: <a href="https://www.youtube.com/watch?v=u981JhkK46o&amp;list=PLpdyXnYZVE553s2ArxXvcHlWtksj0mPbI">Wizard People, Dear Reader</a></p>
+<p>***** This complexity is also why I chose to write about the <code>delay_timer</code> op codes when I could have chosen any of the other 35 op codes; <code>Op::DelayGet</code> is a great example of the types of edge cases a developer needs to consider when writing a virtual machine.</p>
+
+    </div>
+  </body>
+</html>

@@ -1,7 +1,8 @@
 ---
 title: How to Build an Emulator Part 1
+published_date: "2020-09-08 16:12:07 +0000"
 layout: default.liquid
-is_draft: true
+is_draft: false
 ---
 # How to Build a Multithreaded Gameserver (In Rust!) Part 1
 
