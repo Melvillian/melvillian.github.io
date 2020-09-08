@@ -1,1 +1,2 @@
-<?xml version="1.0" encoding="UTF-8"?><rss version="2.0"><channel><title>cobalt blog</title><link>http://example.com</link><description>Blog Posts Go Here</description></channel></rss>
+<?xml version="1.0" encoding="UTF-8"?><rss version="2.0"><channel><title>cobalt blog</title><link>http://example.com</link><description>Blog Posts Go Here</description><item><title>How to Build an Emulator Part 1</title><link>http://example.com/posts/2020-09-08-how-to-build-an-emulator-part-1.html</link><description><![CDATA[<h1>How to Build a Multithreaded Gameserver (In Rust!) Part 1</h1>
+]]></description><guid>http://example.com/posts/2020-09-08-how-to-build-an-emulator-part-1.html</guid><pubDate>Tue, 08 Sep 2020 16:12:07 +0000</pubDate></item></channel></rss>
